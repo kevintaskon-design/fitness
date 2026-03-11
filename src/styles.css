@@ -375,6 +375,13 @@ body {
   color: #0f7960;
 }
 
+.chart-tick-note {
+  margin-top: 2px;
+  font-size: 10px;
+  color: rgba(0, 0, 0, 0.6);
+  text-align: center;
+}
+
 @media (max-width: 390px) {
   .app-shell {
     padding-inline: 12px;

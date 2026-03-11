@@ -3,11 +3,13 @@ import { useEffect, useMemo, useState } from "react";
 type WeightPoint = {
   date: string; // yyyy-mm-dd
   weight: number;
+  note?: string;
 };
 
 const STORAGE_KEY = "vibecoding-fitness-weight";
 const PERIOD_DATES_KEY = "vibecoding-fitness-period-dates";
 const USER_NAME_KEY = "vibecoding-fitness-user-name";
+const GOAL_WEIGHT_KEY = "vibecoding-fitness-goal-weight";
 
 function loadInitialData(userName: string): WeightPoint[] {
   if (typeof window === "undefined") return [];
@@ -19,7 +21,8 @@ function loadInitialData(userName: string): WeightPoint[] {
     if (Array.isArray(parsed)) {
       return parsed.map((p: WeightPoint) => ({
         date: p.date,
-        weight: Number(p.weight)
+        weight: Number(p.weight),
+        note: p.note
       }));
     }
     if (!parsed || typeof parsed !== "object") return [];
@@ -27,10 +30,49 @@ function loadInitialData(userName: string): WeightPoint[] {
     const list = Array.isArray(byName[userName]) ? byName[userName] : [];
     return list.map((p) => ({
       date: p.date,
-      weight: Number(p.weight)
+      weight: Number(p.weight),
+      note: p.note
     }));
   } catch {
     return [];
+  }
+}
+
+function loadGoalWeight(userName: string): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const raw = window.localStorage.getItem(GOAL_WEIGHT_KEY);
+    if (!raw) return "";
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === "string") return parsed;
+    if (!parsed || typeof parsed !== "object") return "";
+    const byName = parsed as Record<string, string>;
+    return typeof byName[userName] === "string" ? byName[userName] : "";
+  } catch {
+    return "";
+  }
+}
+
+function saveGoalWeight(userName: string, goal: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(GOAL_WEIGHT_KEY);
+    let base: Record<string, string> = {};
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === "string") {
+        base[userName] = parsed;
+      } else if (parsed && typeof parsed === "object") {
+        base = parsed as Record<string, string>;
+      }
+    }
+    base[userName] = goal;
+    window.localStorage.setItem(GOAL_WEIGHT_KEY, JSON.stringify(base));
+  } catch {
+    window.localStorage.setItem(
+      GOAL_WEIGHT_KEY,
+      JSON.stringify({ [userName]: goal })
+    );
   }
 }
 
@@ -148,13 +190,17 @@ export function App() {
   });
   const [weight, setWeight] = useState<string>("");
   const [periodDates, setPeriodDates] = useState<string[]>([]);
+  const [goalWeight, setGoalWeight] = useState<string>("");
+  const [weightNote, setWeightNote] = useState<string>("");
 
   useEffect(() => {
     if (!userName) return;
     const localWeight = loadInitialData(userName);
     const localPeriods = loadPeriodDates(userName);
+    const localGoal = loadGoalWeight(userName);
     setData(localWeight);
     setPeriodDates(localPeriods);
+    setGoalWeight(localGoal);
 
     void (async () => {
       const fromServer = await fetchFromServer(userName);
@@ -199,12 +245,13 @@ export function App() {
     if (!date || Number.isNaN(v)) return;
     const next = [
       ...data.filter((p) => p.date !== date),
-      { date, weight: v }
+      { date, weight: v, note: weightNote.trim() || undefined }
     ];
     setData(next);
     saveData(userName, next);
     syncToServer(userName, next, periodDates);
     setWeight("");
+    setWeightNote("");
   };
 
   const handleClear = () => {
@@ -224,6 +271,16 @@ export function App() {
       window.localStorage.setItem(USER_NAME_KEY, trimmed);
     }
   };
+
+  const latestWeight = useMemo(() => {
+    if (sortedData.length === 0) return null;
+    return sortedData[sortedData.length - 1];
+  }, [sortedData]);
+
+  const goalNumber = useMemo(() => {
+    const v = Number(goalWeight);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  }, [goalWeight]);
 
   return (
     <div className="app-root">
@@ -360,6 +417,36 @@ export function App() {
                 </label>
               </div>
 
+              <div className="form-row">
+                <label className="field">
+                  <span className="field-label">目标体重 (kg，可选)</span>
+                  <input
+                    className="field-input"
+                    type="number"
+                    inputMode="decimal"
+                    step="0.1"
+                    placeholder="例如 49"
+                    value={goalWeight}
+                    onChange={(e) => {
+                      setGoalWeight(e.target.value);
+                      if (userName) {
+                        saveGoalWeight(userName, e.target.value);
+                      }
+                    }}
+                  />
+                </label>
+              </div>
+
+              <label className="field">
+                <span className="field-label">今天的小备注（可选）</span>
+                <input
+                  className="field-input"
+                  placeholder="例如：吃了火锅 / 运动后 / 来例假中"
+                  value={weightNote}
+                  onChange={(e) => setWeightNote(e.target.value)}
+                />
+              </label>
+
               <button className="primary-button" onClick={handleAdd}>
                 记录今天
               </button>
@@ -368,13 +455,26 @@ export function App() {
             <section className="card chart-card">
               <div className="card-header">
                 <div className="card-title">体重变化</div>
-                <div className="card-subtitle">纵向为体重，横向为日期</div>
+                <div className="card-subtitle">
+                  纵向为体重，横向为日期
+                  {goalNumber !== null && latestWeight && (
+                    <>
+                      ，当前 {latestWeight.weight.toFixed(1)}kg，距离目标{" "}
+                      {goalNumber.toFixed(1)}kg 约{" "}
+                      {Math.abs(
+                        latestWeight.weight - goalNumber
+                      ).toFixed(1)}
+                      kg
+                    </>
+                  )}
+                </div>
               </div>
 
               <WeightChart
                 data={sortedData}
                 minWeight={minWeight}
                 maxWeight={maxWeight}
+                goal={goalNumber}
               />
             </section>
           </main>
@@ -401,9 +501,10 @@ type ChartProps = {
   data: WeightPoint[];
   minWeight: number;
   maxWeight: number;
+  goal: number | null;
 };
 
-function WeightChart({ data, minWeight, maxWeight }: ChartProps) {
+function WeightChart({ data, minWeight, maxWeight, goal }: ChartProps) {
   const padding = 16;
   const width = 320;
   const height = 200;
@@ -495,6 +596,27 @@ function WeightChart({ data, minWeight, maxWeight }: ChartProps) {
           );
         })}
 
+        {/* 目标体重线 */}
+        {goal !== null && goal >= minWeight && goal <= maxWeight && (
+          <line
+            x1={padding}
+            x2={padding + innerWidth}
+            y1={
+              padding +
+              innerHeight -
+              ((goal - minWeight) / (maxWeight - minWeight || 1)) * innerHeight
+            }
+            y2={
+              padding +
+              innerHeight -
+              ((goal - minWeight) / (maxWeight - minWeight || 1)) * innerHeight
+            }
+            stroke="rgba(255, 255, 255, 0.9)"
+            strokeWidth={1.4}
+            strokeDasharray="6 4"
+          />
+        )}
+
         {/* 圆点 */}
         {points.map((p, index) => (
           <g key={`p-${index}`}>
@@ -519,6 +641,9 @@ function WeightChart({ data, minWeight, maxWeight }: ChartProps) {
             <div className="chart-tick-weight">
               {p.weight.toFixed(1)}
             </div>
+            {p.note && (
+              <div className="chart-tick-note">{p.note}</div>
+            )}
           </div>
         ))}
       </div>
@@ -576,7 +701,53 @@ function PeriodView({ dates, onChange }: PeriodViewProps) {
     setMonth(newMonth);
   };
 
-  const sortedDates = [...dates].sort().reverse();
+  const sortedAsc = useMemo(() => [...dates].sort(), [dates]);
+  const sortedDates = [...sortedAsc].reverse();
+
+  const cycleSummary = useMemo(() => {
+    if (sortedAsc.length === 0) return null;
+    const parse = (d: string) => new Date(d + "T00:00:00");
+    const clusters: { start: Date; end: Date }[] = [];
+    let currentStart: Date | null = null;
+    let prev: Date | null = null;
+    sortedAsc.forEach((d) => {
+      const cur = parse(d);
+      if (!currentStart) {
+        currentStart = cur;
+        prev = cur;
+        return;
+      }
+      if (
+        prev &&
+        (cur.getTime() - prev.getTime()) / 86400000 <= 1.1
+      ) {
+        prev = cur;
+      } else {
+        clusters.push({ start: currentStart, end: prev! });
+        currentStart = cur;
+        prev = cur;
+      }
+    });
+    if (currentStart && prev) {
+      clusters.push({ start: currentStart, end: prev });
+    }
+    if (clusters.length === 0) return null;
+    const lengths = clusters.map(
+      (c) => (c.end.getTime() - c.start.getTime()) / 86400000 + 1
+    );
+    const avgLength =
+      lengths.reduce((s, v) => s + v, 0) / lengths.length;
+    if (clusters.length < 2) return { avgGap: null as number | null, avgLength };
+    const starts = clusters.map((c) => c.start);
+    const gaps: number[] = [];
+    for (let i = 1; i < starts.length; i += 1) {
+      gaps.push(
+        (starts[i].getTime() - starts[i - 1].getTime()) / 86400000
+      );
+    }
+    const avgGap = gaps.reduce((s, v) => s + v, 0) / gaps.length;
+    return { avgGap, avgLength };
+  }, [sortedAsc]);
 
   return (
     <>
@@ -666,6 +837,16 @@ function PeriodView({ dates, onChange }: PeriodViewProps) {
           <div className="card-title">已记录的日期</div>
           <div className="card-subtitle">
             方便大致回顾这几个月的节奏
+            {cycleSummary && (
+              <>
+                ，平均每{" "}
+                {cycleSummary.avgGap
+                  ? cycleSummary.avgGap.toFixed(0)
+                  : "？"}
+                天来一次，每次大约{" "}
+                {cycleSummary.avgLength.toFixed(0)} 天
+              </>
+            )}
           </div>
         </div>
         {sortedDates.length === 0 ? (
