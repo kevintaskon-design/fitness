@@ -1,0 +1,526 @@
+import { useMemo, useState } from "react";
+
+type WeightPoint = {
+  date: string; // yyyy-mm-dd
+  weight: number;
+};
+
+const STORAGE_KEY = "vibecoding-fitness-weight";
+const PERIOD_DATES_KEY = "vibecoding-fitness-period-dates";
+
+function loadInitialData(): WeightPoint[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as WeightPoint[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((p) => ({
+      date: p.date,
+      weight: Number(p.weight)
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function saveData(data: WeightPoint[]) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+export function App() {
+  const [view, setView] = useState<"home" | "weight" | "period">("home");
+  const [data, setData] = useState<WeightPoint[]>(() => loadInitialData());
+  const [date, setDate] = useState<string>(() => {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, "0");
+    const dd = String(today.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  });
+  const [weight, setWeight] = useState<string>("");
+  const [periodDates, setPeriodDates] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = window.localStorage.getItem(PERIOD_DATES_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as string[];
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((d) => typeof d === "string");
+    } catch {
+      return [];
+    }
+  });
+
+  const sortedData = useMemo(
+    () =>
+      [...data].sort((a, b) => a.date.localeCompare(b.date)),
+    [data]
+  );
+
+  const minWeight = useMemo(() => {
+    if (sortedData.length === 0) return 40;
+    return Math.min(...sortedData.map((p) => p.weight)) - 1;
+  }, [sortedData]);
+
+  const maxWeight = useMemo(() => {
+    if (sortedData.length === 0) return 60;
+    return Math.max(...sortedData.map((p) => p.weight)) + 1;
+  }, [sortedData]);
+
+  const handleAdd = () => {
+    const v = Number(weight);
+    if (!date || Number.isNaN(v)) return;
+    const next = [
+      ...data.filter((p) => p.date !== date),
+      { date, weight: v }
+    ];
+    setData(next);
+    saveData(next);
+    setWeight("");
+  };
+
+  const handleClear = () => {
+    if (!window.confirm("确定要清空所有体重记录吗？")) return;
+    setData([]);
+    saveData([]);
+  };
+
+  return (
+    <div className="app-root">
+      <div className="app-shell">
+        <header className="app-header">
+          {(view === "weight" || view === "period") && (
+            <button
+              className="nav-back-button"
+              type="button"
+              onClick={() => setView("home")}
+            >
+              <span className="nav-back-chevron">‹</span>
+              <span className="nav-back-text">主页</span>
+            </button>
+          )}
+          <div>
+            <div className="app-title">轻绿生活</div>
+            <div className="app-subtitle">
+              {view === "home"
+                ? "记录一点点好状态"
+                : view === "weight"
+                ? "记录体重 · 记录状态"
+                : "记录生理期 · 照顾身体"}
+            </div>
+          </div>
+        </header>
+
+        {view === "home" ? (
+          <main className="app-main">
+            <section className="card home-card">
+              <div className="card-header">
+                <div>
+                  <div className="card-title">今天，先关心一下自己</div>
+                  <div className="card-subtitle">
+                    小小的记录，也是在对自己温柔一点
+                  </div>
+                </div>
+              </div>
+              <button
+                className="primary-button"
+                onClick={() => setView("weight")}
+              >
+                去记录体重
+              </button>
+            </section>
+            <section className="card home-card">
+              <div className="card-header">
+                <div>
+                  <div className="card-title">生理期小记</div>
+                  <div className="card-subtitle">
+                    记下来，下一次就大概知道什么时候来了
+                  </div>
+                </div>
+              </div>
+              <button
+                className="primary-button"
+                onClick={() => setView("period")}
+              >
+                去记录生理期
+              </button>
+            </section>
+          </main>
+        ) : view === "weight" ? (
+          <main className="app-main">
+            <section className="card">
+              <div className="card-header">
+                <div>
+                  <div className="card-title">今日体重</div>
+                  <div className="card-subtitle">
+                    轻点一下，留下今天的数字
+                  </div>
+                </div>
+                <button className="ghost-button" onClick={handleClear}>
+                  清空
+                </button>
+              </div>
+
+              <div className="form-row">
+                <label className="field">
+                  <span className="field-label">日期</span>
+                  <input
+                    className="field-input"
+                    type="date"
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">体重 (kg)</span>
+                  <input
+                    className="field-input"
+                    type="number"
+                    inputMode="decimal"
+                    step="0.1"
+                    placeholder="例如 52.3"
+                    value={weight}
+                    onChange={(e) => setWeight(e.target.value)}
+                  />
+                </label>
+              </div>
+
+              <button className="primary-button" onClick={handleAdd}>
+                记录今天
+              </button>
+            </section>
+
+            <section className="card chart-card">
+              <div className="card-header">
+                <div className="card-title">体重变化</div>
+                <div className="card-subtitle">纵向为体重，横向为日期</div>
+              </div>
+
+              <WeightChart
+                data={sortedData}
+                minWeight={minWeight}
+                maxWeight={maxWeight}
+              />
+            </section>
+          </main>
+        ) : (
+          <main className="app-main">
+            <PeriodView
+              dates={periodDates}
+              onChange={(next) => {
+                setPeriodDates(next);
+                if (typeof window !== "undefined") {
+                  window.localStorage.setItem(
+                    PERIOD_DATES_KEY,
+                    JSON.stringify(next)
+                  );
+                }
+              }}
+            />
+          </main>
+        )}
+      </div>
+    </div>
+  );
+}
+
+type ChartProps = {
+  data: WeightPoint[];
+  minWeight: number;
+  maxWeight: number;
+};
+
+function WeightChart({ data, minWeight, maxWeight }: ChartProps) {
+  const padding = 16;
+  const width = 320;
+  const height = 200;
+  const innerWidth = width - padding * 2;
+  const innerHeight = height - padding * 2;
+
+  if (data.length === 0) {
+    return (
+      <div className="chart-empty">
+        还没有记录，先在上面添加一条体重吧。
+      </div>
+    );
+  }
+
+  const xStep =
+    data.length > 1 ? innerWidth / (data.length - 1) : 0;
+  const weightRange = maxWeight - minWeight || 1;
+
+  const points = data.map((p, index) => {
+    const x = padding + index * xStep;
+    const y =
+      padding +
+      innerHeight -
+      ((p.weight - minWeight) / weightRange) * innerHeight;
+    return { x, y, ...p };
+  });
+
+  return (
+    <div className="chart-container">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="chart-svg"
+        preserveAspectRatio="none"
+      >
+        {/* 背景渐变 */}
+        <defs>
+          <linearGradient
+            id="chart-bg"
+            x1="0"
+            y1="0"
+            x2="0"
+            y2="1"
+          >
+            <stop offset="0%" stopColor="#b0f2d0" stopOpacity="0.45" />
+            <stop offset="100%" stopColor="#0f7960" stopOpacity="0.05" />
+          </linearGradient>
+        </defs>
+
+        <rect
+          x={padding}
+          y={padding}
+          width={innerWidth}
+          height={innerHeight}
+          fill="url(#chart-bg)"
+          rx="14"
+        />
+
+        {/* 竖线：每个日期一条 */}
+        {points.map((p, index) => (
+          <line
+            key={`v-${index}`}
+            x1={p.x}
+            y1={padding}
+            x2={p.x}
+            y2={padding + innerHeight}
+            stroke="rgba(255,255,255,0.55)"
+            strokeWidth={1}
+            strokeDasharray="3 4"
+          />
+        ))}
+
+        {/* 折线：上涨为红色，其余为绿色 */}
+        {points.map((p, index) => {
+          if (index === 0) return null;
+          const prev = points[index - 1];
+          const isUp = p.weight > prev.weight;
+          const color = isUp ? "#ff6b6b" : "#0f7960";
+          return (
+            <line
+              key={`seg-${index}`}
+              x1={prev.x}
+              y1={prev.y}
+              x2={p.x}
+              y2={p.y}
+              stroke={color}
+              strokeWidth={2.4}
+              strokeLinecap="round"
+            />
+          );
+        })}
+
+        {/* 圆点 */}
+        {points.map((p, index) => (
+          <g key={`p-${index}`}>
+            <circle
+              cx={p.x}
+              cy={p.y}
+              r={4.5}
+              fill="#ffffff"
+              stroke="#0f7960"
+              strokeWidth={1.4}
+            />
+          </g>
+        ))}
+      </svg>
+
+      <div className="chart-footer">
+        {points.map((p, index) => (
+          <div className="chart-tick" key={index}>
+            <div className="chart-tick-date">
+              {p.date.slice(5).replace("-", "/")}
+            </div>
+            <div className="chart-tick-weight">
+              {p.weight.toFixed(1)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+type PeriodViewProps = {
+  dates: string[];
+  onChange: (next: string[]) => void;
+};
+
+function PeriodView({ dates, onChange }: PeriodViewProps) {
+  const today = new Date();
+  const [year, setYear] = useState(today.getFullYear());
+  const [month, setMonth] = useState(today.getMonth()); // 0-11
+
+  const monthLabel = `${year}年${String(month + 1).padStart(2, "0")}月`;
+
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstWeekday = new Date(year, month, 1).getDay(); // 0-6, 0=周日
+
+  const cells = useMemo(() => {
+    const totalCells = Math.ceil((firstWeekday + daysInMonth) / 7) * 7;
+    const result: (number | null)[] = [];
+    for (let i = 0; i < totalCells; i += 1) {
+      const day = i - firstWeekday + 1;
+      result.push(day >= 1 && day <= daysInMonth ? day : null);
+    }
+    return result;
+  }, [firstWeekday, daysInMonth]);
+
+  const toggleDate = (day: number) => {
+    const m = String(month + 1).padStart(2, "0");
+    const d = String(day).padStart(2, "0");
+    const dateStr = `${year}-${m}-${d}`;
+    const exists = dates.includes(dateStr);
+    const next = exists
+      ? dates.filter((v) => v !== dateStr)
+      : [...dates, dateStr].sort();
+    onChange(next);
+  };
+
+  const goMonth = (delta: number) => {
+    let newMonth = month + delta;
+    let newYear = year;
+    if (newMonth < 0) {
+      newMonth = 11;
+      newYear -= 1;
+    } else if (newMonth > 11) {
+      newMonth = 0;
+      newYear += 1;
+    }
+    setYear(newYear);
+    setMonth(newMonth);
+  };
+
+  const sortedDates = [...dates].sort().reverse();
+
+  return (
+    <>
+      <section className="card">
+        <div className="card-header">
+          <div>
+            <div className="card-title">生理期日历</div>
+            <div className="card-subtitle">
+              在日历上点一下这一天，表示有来
+            </div>
+          </div>
+          {dates.length > 0 && (
+            <button
+              className="ghost-button"
+              onClick={() => {
+                if (window.confirm("确定要清空所有生理期记录吗？")) {
+                  onChange([]);
+                }
+              }}
+            >
+              清空
+            </button>
+          )}
+        </div>
+
+        <div className="period-calendar-header">
+          <button
+            type="button"
+            className="calendar-nav"
+            onClick={() => goMonth(-1)}
+          >
+            ‹
+          </button>
+          <div className="period-calendar-title">{monthLabel}</div>
+          <button
+            type="button"
+            className="calendar-nav"
+            onClick={() => goMonth(1)}
+          >
+            ›
+          </button>
+        </div>
+
+        <div className="period-calendar-week">
+          {["日", "一", "二", "三", "四", "五", "六"].map((w) => (
+            <div key={w} className="period-calendar-weekday">
+              {w}
+            </div>
+          ))}
+        </div>
+
+        <div className="period-calendar-grid">
+          {cells.map((day, idx) => {
+            if (!day) {
+              return <div key={idx} className="period-day empty" />;
+            }
+            const m = String(month + 1).padStart(2, "0");
+            const d = String(day).padStart(2, "0");
+            const dateStr = `${year}-${m}-${d}`;
+            const selected = dates.includes(dateStr);
+            const isToday =
+              dateStr ===
+              `${today.getFullYear()}-${String(
+                today.getMonth() + 1
+              ).padStart(2, "0")}-${String(today.getDate()).padStart(
+                2,
+                "0"
+              )}`;
+            return (
+              <button
+                key={idx}
+                type="button"
+                className={`period-day${selected ? " selected" : ""}${
+                  isToday ? " today" : ""
+                }`}
+                onClick={() => toggleDate(day)}
+              >
+                <span className="period-day-number">{day}</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="card chart-card">
+        <div className="card-header">
+          <div className="card-title">已记录的日期</div>
+          <div className="card-subtitle">
+            方便大致回顾这几个月的节奏
+          </div>
+        </div>
+        {sortedDates.length === 0 ? (
+          <div className="chart-empty">
+            还没有生理期记录，可以先在上面的日历里点一下有来的一天。
+          </div>
+        ) : (
+          <div className="period-list">
+            {sortedDates.map((d) => (
+              <div className="period-item" key={d}>
+                <div className="period-main">
+                  <div className="period-dates">{d}</div>
+                </div>
+                <button
+                  className="period-delete"
+                  type="button"
+                  onClick={() => onChange(dates.filter((v) => v !== d))}
+                >
+                  删除
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
