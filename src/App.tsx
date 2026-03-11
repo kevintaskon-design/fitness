@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type WeightPoint = {
   date: string; // yyyy-mm-dd
@@ -7,15 +7,25 @@ type WeightPoint = {
 
 const STORAGE_KEY = "vibecoding-fitness-weight";
 const PERIOD_DATES_KEY = "vibecoding-fitness-period-dates";
+const USER_NAME_KEY = "vibecoding-fitness-user-name";
 
-function loadInitialData(): WeightPoint[] {
+function loadInitialData(userName: string): WeightPoint[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as WeightPoint[];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map((p) => ({
+    const parsed = JSON.parse(raw);
+    // 兼容旧版本：直接存数组
+    if (Array.isArray(parsed)) {
+      return parsed.map((p: WeightPoint) => ({
+        date: p.date,
+        weight: Number(p.weight)
+      }));
+    }
+    if (!parsed || typeof parsed !== "object") return [];
+    const byName = parsed as Record<string, WeightPoint[]>;
+    const list = Array.isArray(byName[userName]) ? byName[userName] : [];
+    return list.map((p) => ({
       date: p.date,
       weight: Number(p.weight)
     }));
@@ -24,14 +34,111 @@ function loadInitialData(): WeightPoint[] {
   }
 }
 
-function saveData(data: WeightPoint[]) {
+function saveData(userName: string, data: WeightPoint[]) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    let base: Record<string, WeightPoint[]> = {};
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        base[userName] = parsed as WeightPoint[];
+      } else if (parsed && typeof parsed === "object") {
+        base = parsed as Record<string, WeightPoint[]>;
+      }
+    }
+    base[userName] = data;
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(base));
+  } catch {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ [userName]: data }));
+  }
+}
+
+function loadPeriodDates(userName: string): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(PERIOD_DATES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((d: unknown) => typeof d === "string") as string[];
+    }
+    if (!parsed || typeof parsed !== "object") return [];
+    const byName = parsed as Record<string, string[]>;
+    const list = Array.isArray(byName[userName]) ? byName[userName] : [];
+    return list.filter((d) => typeof d === "string");
+  } catch {
+    return [];
+  }
+}
+
+function savePeriodDates(userName: string, dates: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(PERIOD_DATES_KEY);
+    let base: Record<string, string[]> = {};
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        base[userName] = parsed as string[];
+      } else if (parsed && typeof parsed === "object") {
+        base = parsed as Record<string, string[]>;
+      }
+    }
+    base[userName] = dates;
+    window.localStorage.setItem(PERIOD_DATES_KEY, JSON.stringify(base));
+  } catch {
+    window.localStorage.setItem(
+      PERIOD_DATES_KEY,
+      JSON.stringify({ [userName]: dates })
+    );
+  }
+}
+
+async function fetchFromServer(
+  userName: string
+): Promise<{ weight: WeightPoint[]; periodDates: string[] } | null> {
+  try {
+    const resp = await fetch(`/api/data?name=${encodeURIComponent(userName)}`);
+    if (!resp.ok) return null;
+    const json = (await resp.json()) as {
+      weight?: WeightPoint[];
+      periodDates?: string[];
+    };
+    return {
+      weight: Array.isArray(json.weight) ? json.weight : [],
+      periodDates: Array.isArray(json.periodDates) ? json.periodDates : []
+    };
+  } catch {
+    return null;
+  }
+}
+
+function syncToServer(
+  userName: string,
+  weight: WeightPoint[],
+  periodDates: string[]
+) {
+  void fetch("/api/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: userName, weight, periodDates })
+  }).catch(() => {});
 }
 
 export function App() {
   const [view, setView] = useState<"home" | "weight" | "period">("home");
-  const [data, setData] = useState<WeightPoint[]>(() => loadInitialData());
+  const [userName, setUserName] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const stored = window.localStorage.getItem(USER_NAME_KEY);
+      return stored && stored.trim() ? stored.trim() : null;
+    } catch {
+      return null;
+    }
+  });
+  const [nameInput, setNameInput] = useState<string>("");
+  const [data, setData] = useState<WeightPoint[]>([]);
   const [date, setDate] = useState<string>(() => {
     const today = new Date();
     const yyyy = today.getFullYear();
@@ -40,18 +147,35 @@ export function App() {
     return `${yyyy}-${mm}-${dd}`;
   });
   const [weight, setWeight] = useState<string>("");
-  const [periodDates, setPeriodDates] = useState<string[]>(() => {
-    if (typeof window === "undefined") return [];
-    try {
-      const raw = window.localStorage.getItem(PERIOD_DATES_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw) as string[];
-      if (!Array.isArray(parsed)) return [];
-      return parsed.filter((d) => typeof d === "string");
-    } catch {
-      return [];
-    }
-  });
+  const [periodDates, setPeriodDates] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!userName) return;
+    const localWeight = loadInitialData(userName);
+    const localPeriods = loadPeriodDates(userName);
+    setData(localWeight);
+    setPeriodDates(localPeriods);
+
+    void (async () => {
+      const fromServer = await fetchFromServer(userName);
+      if (!fromServer) return;
+      // 简单合并：把两边的日期去重合并
+      const weightMap = new Map<string, number>();
+      [...localWeight, ...fromServer.weight].forEach((w) => {
+        weightMap.set(w.date, w.weight);
+      });
+      const mergedWeight: WeightPoint[] = Array.from(weightMap.entries()).map(
+        ([date, weight]) => ({ date, weight })
+      );
+      const mergedPeriods = Array.from(
+        new Set<string>([...localPeriods, ...fromServer.periodDates])
+      ).sort();
+      setData(mergedWeight);
+      setPeriodDates(mergedPeriods);
+      saveData(userName, mergedWeight);
+      savePeriodDates(userName, mergedPeriods);
+    })();
+  }, [userName]);
 
   const sortedData = useMemo(
     () =>
@@ -70,6 +194,7 @@ export function App() {
   }, [sortedData]);
 
   const handleAdd = () => {
+    if (!userName) return;
     const v = Number(weight);
     if (!date || Number.isNaN(v)) return;
     const next = [
@@ -77,19 +202,67 @@ export function App() {
       { date, weight: v }
     ];
     setData(next);
-    saveData(next);
+    saveData(userName, next);
+    syncToServer(userName, next, periodDates);
     setWeight("");
   };
 
   const handleClear = () => {
     if (!window.confirm("确定要清空所有体重记录吗？")) return;
     setData([]);
-    saveData([]);
+    if (userName) {
+      saveData(userName, []);
+      syncToServer(userName, [], periodDates);
+    }
+  };
+
+  const handleSaveName = () => {
+    const trimmed = nameInput.trim();
+    if (!trimmed) return;
+    setUserName(trimmed);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(USER_NAME_KEY, trimmed);
+    }
   };
 
   return (
     <div className="app-root">
       <div className="app-shell">
+        {!userName ? (
+          <>
+            <header className="app-header">
+              <div>
+                <div className="app-title">轻绿生活</div>
+                <div className="app-subtitle">先给自己取一个温柔的小名</div>
+              </div>
+            </header>
+            <main className="app-main">
+              <section className="card home-card">
+                <div className="card-header">
+                  <div>
+                    <div className="card-title">你想让我怎么称呼你？</div>
+                    <div className="card-subtitle">
+                      这个名字只保存在你自己的设备里
+                    </div>
+                  </div>
+                </div>
+                <label className="field">
+                  <span className="field-label">昵称</span>
+                  <input
+                    className="field-input"
+                    placeholder="例如：小月 / Lili / 自己喜欢的称呼"
+                    value={nameInput}
+                    onChange={(e) => setNameInput(e.target.value)}
+                  />
+                </label>
+                <button className="primary-button" onClick={handleSaveName}>
+                  确认这个名字
+                </button>
+              </section>
+            </main>
+          </>
+        ) : (
+          <>
         <header className="app-header">
           {(view === "weight" || view === "period") && (
             <button
@@ -105,7 +278,7 @@ export function App() {
             <div className="app-title">轻绿生活</div>
             <div className="app-subtitle">
               {view === "home"
-                ? "记录一点点好状态"
+                ? `你好，${userName}，一起记录一点点好状态`
                 : view === "weight"
                 ? "记录体重 · 记录状态"
                 : "记录生理期 · 照顾身体"}
@@ -211,15 +384,13 @@ export function App() {
               dates={periodDates}
               onChange={(next) => {
                 setPeriodDates(next);
-                if (typeof window !== "undefined") {
-                  window.localStorage.setItem(
-                    PERIOD_DATES_KEY,
-                    JSON.stringify(next)
-                  );
-                }
+                savePeriodDates(userName, next);
+                syncToServer(userName, data, next);
               }}
             />
           </main>
+        )}
+          </>
         )}
       </div>
     </div>
